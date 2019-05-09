@@ -1,0 +1,110 @@
+---
+title: "Prediction of the Quality of Weight Lifting Exercises"
+author: "Fluctuzz"
+date: "8 May 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this simple data analysis a random forest model is trained on a Weight Lifting Exercises Data set.
+The data set contains many variables relating to motion of the person during the exercise. As a predictor value `classe` will be used. It is a factor variable from A to E indicating how well the exercise was performed.
+
+
+## Data Preparation 
+
+At first the libraries and data set get loaded into R and a parallel computing cluster is initiated. Also data is split into a training and test set to estimated the out of sample error after the model is trained.
+```{r results='hide', message=F, warning=F}
+library(data.table)
+library(dplyr)
+library(caret)
+library(parallel)
+library(doParallel)
+library(ggplot2)
+#Setting seed for Reproducibility 
+set.seed(314)
+
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+data <-  read.csv("pml-training.csv")
+
+train_index <- createDataPartition(data$classe, p=0.9, list = FALSE)
+
+train <- data[train_index,]
+test <- data[-train_index,]
+```
+
+
+In the next section columns unrelated to the quality of the exercise/`classe` get removed (e.g username, time stamps),
+because these variables don't give an indication about `classe`. Furthermore columns with a lot of empty or missing values get removed for the same reason.
+```{r, results='hide'}
+uninformative_cols <- grep("^kurtosis|^skewness|^max|^min|^amplitude", names(train), value=TRUE)
+
+unrelated_cols <- c("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp",
+                "new_window", "num_window", "X")
+
+train <- train[ , !(names(train) %in% c(uninformative_cols,unrelated_cols))]
+test <- test[ , !(names(test) %in% c(uninformative_cols,unrelated_cols))]
+
+#Remove Columns less than 10000 non NAs
+train <- train[colSums(!is.na(train)) > 1000]
+test <- test[colSums(!is.na(train)) > 1000] #Have to use same subset as in train
+```
+
+
+## Model Training
+
+The training process of the model happens in several steps. At first Principal Component Analysis is used on the data set. This reduces columns from 53 to 25 and thereby speeding up the training process and removing linear relationships between the measurements.
+After that a random forest model is trained with cross validation with 5 folds. The cross validation helps to ensure that the model isn't overfitting to the particulate data set.
+
+```{r pressure, echo=TRUE, cache=TRUE}
+control <- trainControl(method="cv", number=5, allowParallel = TRUE)
+fit <- train(classe ~ ., 
+             data=train,
+             preProcess = "pca",
+             method="rf", 
+             trControl = control)
+
+#Stoping parallel cluster
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Results & Evaluation
+
+
+### Confusion matrix of fitted model
+```{r}
+confusionMatrix.train(fit)
+```
+The accuracy of 0.98 is pretty good considering the model was only trained on 25 variables.
+
+### Interpretation of the model
+
+The box plot shows that the median of the first principal component is higher for the `classe` A.
+```{r}
+pca_inputs <- predict(fit$preProcess, train)
+ggplot(data=train, aes(x=classe, y=pca_inputs$PC1, color=classe)) + ylab("PC1") + geom_boxplot()
+```
+
+Furthermore a scatter plot between only the first and second principal component shows a clustering in 5 groups.
+A clear distinction between the `classe` isn't identifiable, suggesting that the training data has more dimensions. 
+```{r}
+ggplot(data=pca_inputs, aes(x=PC1, y=PC2, color=train$classe))+ labs(color="classe")+ geom_point(alpha=0.4)
+```
+
+
+### Estimated out of sample error 
+The model performs about the same on the test set, suggesting the the model doesn't overfit on the training data.
+```{r}
+test_pred <- predict(fit, test)
+confusionMatrix(test_pred, test$classe)
+
+```
+
+
